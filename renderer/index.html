@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:;"
+    />
+    <title>市场速览</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="titlebar">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          <span class="brand-text">市场速览</span>
+          <span class="brand-tag">金十</span>
+          <span class="pt-badge" id="ptBadge">穿透中</span>
+        </div>
+        <div class="titlebar-right">
+          <span class="clock" id="clock">--:--:--</span>
+          <div class="tb-actions">
+            <button class="icon-btn" data-act="mini" title="迷你模式（Ctrl+Alt+M）">
+              <svg viewBox="0 0 16 16"><rect x="2.5" y="5" width="11" height="6" rx="1.4" /></svg>
+            </button>
+            <button class="icon-btn" data-act="settings" title="设置">
+              <svg viewBox="0 0 16 16">
+                <path d="M2.5 4.2h11M2.5 8h11M2.5 11.8h11" />
+                <circle cx="6" cy="4.2" r="1.5" />
+                <circle cx="10.5" cy="8" r="1.5" />
+                <circle cx="5" cy="11.8" r="1.5" />
+              </svg>
+            </button>
+            <button class="icon-btn" data-act="hide" title="收进托盘（Ctrl+Alt+J）">
+              <svg viewBox="0 0 16 16"><path d="M4 6.5l4 3.6 4-3.6" /></svg>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <section class="quotes-region" id="quotesRegion">
+        <div class="watch-block">
+          <div class="watch-head">
+            <span class="watch-title"><i class="watch-star">★</i>关注</span>
+            <em id="watchCount">0</em>
+            <span class="watch-tip">点击卡片加入 / 移出</span>
+          </div>
+          <div class="quotes" id="watchGrid"></div>
+          <div class="watch-hint" id="watchHint">还没有关注品种，点击下方任意行情卡片即可加入</div>
+        </div>
+
+        <div class="quotes-wrap" id="quotesWrap">
+          <div class="quotes" id="quotes"></div>
+        </div>
+      </section>
+
+      <div class="splitter" id="splitter" title="拖拽调整行情 / 快讯高度 · 双击恢复默认">
+        <b></b>
+      </div>
+
+      <section class="feed">
+        <div class="feed-head">
+          <div class="tabs">
+            <button class="tab on" data-filter="all">全部快讯</button>
+            <button class="tab" data-filter="important">重要</button>
+          </div>
+          <span class="feed-meta" id="feedMeta">连接中</span>
+        </div>
+
+        <div class="feed-list" id="feed"></div>
+        <div class="feed-empty" id="feedEmpty">正在连接金十数据…</div>
+      </section>
+
+      <footer class="statusbar">
+        <span class="dot" id="liveDot"></span>
+        <span id="statusText">连接中</span>
+        <span class="spacer"></span>
+        <span id="latency"></span>
+      </footer>
+
+      <section class="sheet" id="sheet" hidden>
+        <header class="sheet-head">
+          <span>设置</span>
+          <button class="icon-btn" data-act="close-sheet" title="关闭">
+            <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+          </button>
+        </header>
+
+        <div class="sheet-body">
+          <div class="field">
+            <div class="field-label"><span>窗口不透明度</span><em id="opacityVal">94%</em></div>
+            <input id="opacity" type="range" min="30" max="100" step="1" />
+          </div>
+
+          <div class="field">
+            <div class="field-label"><span>行情刷新</span></div>
+            <div class="seg" id="quoteInterval">
+              <button data-v="3000">3 秒</button>
+              <button data-v="5000">5 秒</button>
+              <button data-v="10000">10 秒</button>
+              <button data-v="30000">30 秒</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label"><span>快讯刷新</span></div>
+            <div class="seg" id="flashInterval">
+              <button data-v="5000">5 秒</button>
+              <button data-v="8000">8 秒</button>
+              <button data-v="15000">15 秒</button>
+              <button data-v="30000">30 秒</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="field-label"><span>行情分组</span></div>
+            <div class="chips" id="groups"></div>
+          </div>
+
+          <div class="field switches">
+            <label class="switch-row"><span>始终置顶</span><input type="checkbox" id="alwaysOnTop" /><i></i></label>
+            <label class="switch-row"><span>点击穿透</span><input type="checkbox" id="clickThrough" /><i></i></label>
+            <label class="switch-row"><span>开机自启</span><input type="checkbox" id="autoLaunch" /><i></i></label>
+            <label class="switch-row"><span>重要快讯系统通知</span><input type="checkbox" id="notify" /><i></i></label>
+          </div>
+
+          <div class="hotkeys" id="hotkeys"></div>
+
+          <div class="sheet-foot">
+            <p class="src">数据来源：金十数据快讯 / 东方财富 / 新浪财经。行情可能有延迟，仅供参考，不构成投资建议。</p>
+            <button class="danger" data-act="quit">退出程序</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
