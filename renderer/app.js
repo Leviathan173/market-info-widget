@@ -74,10 +74,13 @@ function makeCard(item, watched) {
   cell.title = `${item.name} · ${watched ? '点击移出关注' : '点击加入关注'}`;
   cell.innerHTML = `
     <div class="q-top">
-      <span class="q-name"></span>
+      <span class="q-title"><span class="q-name"></span><span class="q-date"></span></span>
       <span class="q-pct">--</span>
     </div>
-    <div class="q-price">--</div>
+    <div class="q-price-row">
+      <div class="q-price">--</div>
+      <span class="q-ref" hidden></span>
+    </div>
     <div class="q-range"><i></i><b></b></div>`;
   cell.querySelector('.q-name').textContent = item.short;
   return cell;
@@ -271,7 +274,8 @@ function updateCard(cell, q) {
   const priceEl = cell.querySelector('.q-price');
   const dir = dirOf(q.pct);
 
-  priceEl.textContent = fmtPrice(q.price);
+  priceEl.textContent =
+    q.source === 'fund' && Number.isFinite(q.price) ? q.price.toFixed(4) : fmtPrice(q.price);
   priceEl.className = `q-price ${dir}`;
   pctEl.textContent = pctText(q.pct);
   pctEl.className = `q-pct ${dir}`;
@@ -282,6 +286,35 @@ function updateCard(cell, q) {
     const pos = Math.min(100, Math.max(0, ((q.price - q.low) / (q.high - q.low)) * 100));
     bar.style.width = `${pos}%`;
     dot.style.left = `${pos}%`;
+  }
+
+  // 场外基金只有每天收盘后公布的确认净值，把净值日期标出来，避免误当成当天涨跌
+  const isFund = q.source === 'fund' && q.date;
+  const dateEl = cell.querySelector('.q-date');
+  if (dateEl) dateEl.textContent = isFund ? q.date.slice(5) : '';
+
+  const wasFund = cell.classList.contains('is-fund');
+  cell.classList.toggle('is-fund', Boolean(isFund));
+  // 紧凑模式下基金卡片会多出一个日期角标，宽度变了要重新量
+  if (wasFund !== Boolean(isFund) && isCompact()) scheduleMiniMeasure();
+
+  // 基金卡片里再带一行目标 ETF 的实时涨跌，作为盘中参考
+  const refEl = cell.querySelector('.q-ref');
+  if (refEl) {
+    const ref = q.ref;
+    refEl.hidden = !ref;
+    if (ref) {
+      refEl.className = `q-ref ${dirOf(ref.pct)}`;
+      refEl.textContent = `ETF ${pctText(ref.pct)}`;
+    }
+  }
+
+  if (isFund) {
+    const action = cell.classList.contains('watched') ? '点击移出关注' : '点击加入关注';
+    const refText = q.ref
+      ? ` · 参考 ${q.ref.name} ${fmtPrice(q.ref.price)} ${pctText(q.ref.pct)}`
+      : '';
+    cell.title = `${q.name} · 净值日期 ${q.date}${refText} · ${action}`;
   }
 
   // 价格跳动时给一格淡色高亮

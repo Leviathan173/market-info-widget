@@ -4,6 +4,7 @@
  * 行情标的配置。
  *   src: 'em'   东方财富  push2.eastmoney.com（secid）
  *   src: 'sina' 新浪财经  hq.sinajs.cn（nf_ 前缀 = 内盘期货主力连续）
+ *   src: 'fund' 场外基金净值（蛋卷基金，代码）
  * 想加品种，往对应 groups[].items 里加一行即可，页面会自动出现。
  */
 const GROUPS = [
@@ -19,9 +20,9 @@ const GROUPS = [
   },
   {
     id: 'etf',
-    name: '板块 ETF',
+    name: '板块 ETF / 基金',
     items: [
-      { short: '人工智能', name: '人工智能ETF', src: 'em', secid: '1.515070' },
+      { short: '人工智能', name: '易方达人工智能ETF联接C', src: 'fund', code: '012734', ref: { src: 'em', secid: '0.159819' } },
       { short: '芯片', name: '芯片ETF', src: 'em', secid: '0.159995' },
       { short: '证券', name: '证券ETF', src: 'em', secid: '1.512880' },
       { short: '军工', name: '军工ETF', src: 'em', secid: '1.512660' },

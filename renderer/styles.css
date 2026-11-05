@@ -397,6 +397,27 @@ body {
   gap: 5px;
 }
 
+.q-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.q-title .q-name {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.q-date {
+  display: none;
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 8px;
+  color: var(--mute);
+  font-variant-numeric: tabular-nums;
+}
+
 .q-name {
   font-size: 10px;
   color: var(--dim);
@@ -444,6 +465,39 @@ body {
 
 .q-price.down {
   color: var(--down);
+}
+
+/* 场外基金：没有分时区间，用净值日期 + 目标 ETF 参考涨跌占位 */
+.q-price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+
+.q-ref {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 500;
+  color: var(--mute);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.q-ref.up {
+  color: var(--up);
+}
+
+.q-ref.down {
+  color: var(--down);
+}
+
+.q.is-fund .q-range {
+  display: none;
+}
+
+.q.is-fund .q-date {
+  display: inline-block;
 }
 
 .q-range {

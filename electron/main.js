@@ -25,6 +25,8 @@ const DEFAULT_SIZE = { width: 408, height: 726, minWidth: 330, minHeight: 260 };
 const MINI_SIZE = { width: 360, height: 140, minWidth: 200 };
 // 任务栏模式：高度由系统任务栏厚度决定，这里只约束宽度
 const TASKBAR_SIZE = { width: 380, minWidth: 120, minHeight: 30 };
+// 任务栏条的默认横向位置：避开最左边的天气小组件，落在左侧空白区
+const TASKBAR_DEFAULT_X = 140;
 // 距离屏幕工作区边缘多少像素以内就吸附上去
 const SNAP_DISTANCE = 18;
 const APP_ID = 'com.maigo.marketinfo';
@@ -65,6 +67,22 @@ let notifyIcon = null;
 let hotkeys = {};
 
 /* ---------------------------------------------------------------- 工具 */
+
+/** 品种代码换过之后，把旧关注迁移到新代码，避免关注栏里留下空项 */
+function migrateSettings() {
+  const aliases = { '1.515070': '012734' };
+  const watch = store.get('watch');
+  if (!Array.isArray(watch)) return;
+
+  const next = [];
+  for (const key of watch) {
+    const mapped = aliases[key] || key;
+    if (typeof mapped === 'string' && mapped && !next.includes(mapped)) next.push(mapped);
+  }
+  if (next.length !== watch.length || next.some((value, index) => value !== watch[index])) {
+    store.set({ watch: next });
+  }
+}
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -114,6 +132,14 @@ function normalizeBounds(saved) {
 }
 
 const clamp = (value, min, max) => Math.min(Math.max(min, value), Math.max(min, max));
+
+/** 已保存的任务栏横向位置；没有记录时返回 null（注意不能把 null 当成 0） */
+function storedTaskbarX() {
+  const value = store.get('taskbarX');
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
 
 /**
  * 取当前屏幕任务栏的位置和厚度（逻辑像素）。
@@ -461,9 +487,9 @@ function applyMiniWidth(width) {
     const w = Math.min(bar.area.width - 16, Math.max(TASKBAR_SIZE.minWidth, value));
     if (Math.abs(w - cur.width) < 1) return;
 
-    const savedX = Number(store.get('taskbarX'));
+    const savedX = storedTaskbarX();
     const x = clamp(
-      Number.isFinite(savedX) ? savedX : cur.x,
+      savedX === null ? cur.x : savedX,
       bar.area.x,
       bar.area.x + bar.area.width - w,
     );
@@ -531,9 +557,9 @@ function applyTaskbar(on) {
 
     const savedW = Math.round(Number(store.get('taskbarWidth')) || TASKBAR_SIZE.width);
     const width = clamp(savedW, TASKBAR_SIZE.minWidth, bar.area.width - 16);
-    const savedX = Number(store.get('taskbarX'));
+    const savedX = storedTaskbarX();
     const x = clamp(
-      Number.isFinite(savedX) ? savedX : bar.area.x + 8,
+      savedX === null ? bar.area.x + TASKBAR_DEFAULT_X : savedX,
       bar.area.x,
       bar.area.x + bar.area.width - width,
     );
@@ -1038,6 +1064,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     app.setAppUserModelId(APP_ID);
     store = new Store(path.join(app.getPath('userData'), 'settings.json'));
+    migrateSettings();
     notifyIcon = createIcon(64);
 
     registerIpc();

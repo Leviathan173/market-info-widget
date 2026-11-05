@@ -5,9 +5,14 @@ const { itemsOf } = require('./symbols');
 const EM_URL = 'https://push2.eastmoney.com/api/qt/ulist.np/get';
 const EM_FIELDS = 'f1,f2,f3,f4,f12,f13,f14,f15,f16,f17,f18';
 const SINA_URL = 'https://hq.sinajs.cn/list=';
+const FUND_URL = 'https://danjuanfunds.com/djapi/fund/';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
 const TIMEOUT = 9000;
+
+// 场外基金净值一天只更新一次，缓存 5 分钟，避免每 5 秒轮询都打基金接口
+const FUND_TTL = 5 * 60 * 1000;
+const fundCache = new Map();
 
 function num(v) {
   const n = Number(v);
@@ -49,6 +54,70 @@ async function fetchEastmoney(items) {
       at: Date.now(),
     };
   });
+}
+
+/**
+ * 场外基金：官方确认净值（盘中被监管要求下架估值，只有收盘后公布的净值）
+ * 蛋卷基金接口：data.fund_derived.unit_nav / nav_grtd / end_date
+ */
+async function fetchFunds(items) {
+  if (!items.length) return { quotes: [], errors: [] };
+
+  const quotes = [];
+  const errors = [];
+
+  for (const item of items) {
+    const cached = fundCache.get(item.code);
+    if (cached && Date.now() - cached.at < FUND_TTL) {
+      quotes.push({
+        ...cached,
+        key: item.code,
+        short: item.short,
+        name: item.name,
+        group: item.group,
+      });
+      continue;
+    }
+
+    try {
+      const res = await fetch(`${FUND_URL}${item.code}`, {
+        headers: { 'User-Agent': UA, Referer: 'https://danjuanfunds.com/', Accept: 'application/json' },
+        signal: AbortSignal.timeout(TIMEOUT),
+      });
+      if (!res.ok) throw new Error(`基金净值 HTTP ${res.status}`);
+
+      const json = await res.json();
+      const derived = json?.data?.fund_derived;
+      const price = num(derived?.unit_nav);
+      if (price === null) throw new Error('基金净值数据为空');
+
+      const pct = num(derived?.nav_grtd);
+      const prevClose = pct !== null && pct > -100 ? +(price / (1 + pct / 100)).toFixed(4) : null;
+      const quote = {
+        key: item.code,
+        short: item.short,
+        name: item.name,
+        group: item.group,
+        price,
+        prevClose,
+        change: prevClose === null ? null : +(price - prevClose).toFixed(4),
+        pct,
+        high: null,
+        low: null,
+        open: null,
+        date: derived?.end_date || '',
+        source: 'fund',
+        at: Date.now(),
+      };
+
+      fundCache.set(item.code, quote);
+      quotes.push(quote);
+    } catch (err) {
+      errors.push(`${item.short}基金净值：${err.message}`);
+    }
+  }
+
+  return { quotes, errors };
 }
 
 /**
@@ -103,10 +172,18 @@ async function fetchSina(items) {
  */
 async function fetchQuotes(groupIds) {
   const items = itemsOf(groupIds || []);
-  const em = items.filter((i) => i.src === 'em');
+  const refItems = items
+    .filter((i) => i.ref && i.ref.src === 'em' && i.ref.secid)
+    .map((i) => ({ ...i.ref, group: i.group }));
+  const em = [...items.filter((i) => i.src === 'em'), ...refItems];
   const sina = items.filter((i) => i.src === 'sina');
+  const fund = items.filter((i) => i.src === 'fund');
 
-  const [emRes, sinaRes] = await Promise.allSettled([fetchEastmoney(em), fetchSina(sina)]);
+  const [emRes, sinaRes, fundRes] = await Promise.allSettled([
+    fetchEastmoney(em),
+    fetchSina(sina),
+    fetchFunds(fund),
+  ]);
   const quotes = [];
   const errors = [];
 
@@ -116,13 +193,33 @@ async function fetchQuotes(groupIds) {
   if (sinaRes.status === 'fulfilled') quotes.push(...sinaRes.value);
   else errors.push(sinaRes.reason?.message || '新浪行情失败');
 
+  if (fundRes.status === 'fulfilled') {
+    quotes.push(...fundRes.value.quotes);
+    errors.push(...fundRes.value.errors);
+  } else {
+    errors.push(fundRes.reason?.message || '基金净值失败');
+  }
+
   if (!quotes.length && errors.length) throw new Error(errors.join('；'));
 
   // 按配置顺序输出
-  const order = new Map(items.map((it, idx) => [itemKey(it), idx]));
-  quotes.sort((a, b) => (order.get(a.key) ?? 999) - (order.get(b.key) ?? 999));
+  const refMap = new Map(quotes.map((q) => [q.key, q]));
+  for (const item of items) {
+    if (!item.ref) continue;
+    const target = quotes.find((q) => q.key === itemKey(item));
+    const ref = refMap.get(item.ref.secid);
+    if (target && ref) {
+      target.ref = { key: ref.key, name: ref.name, price: ref.price, pct: ref.pct };
+    }
+  }
 
-  return { quotes, errors, at: Date.now() };
+  // 参考行情只挂在主卡片上，不单独占一格
+  const visible = new Set(items.map((it) => itemKey(it)));
+  const result = quotes.filter((q) => visible.has(q.key));
+  const order = new Map(items.map((it, idx) => [itemKey(it), idx]));
+  result.sort((a, b) => (order.get(a.key) ?? 999) - (order.get(b.key) ?? 999));
+
+  return { quotes: result, errors, at: Date.now() };
 }
 
 module.exports = { fetchQuotes };
