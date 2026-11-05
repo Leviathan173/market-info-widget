@@ -125,6 +125,9 @@ function buildQuoteSkeleton() {
       registerQuoteEl(key, cell);
     }
   }
+
+  // 迷你条的宽度取决于展示的卡片数量，重建后重新量一次
+  scheduleMiniMeasure();
 }
 
 function updateQuoteFade() {
@@ -134,6 +137,40 @@ function updateQuoteFade() {
     return;
   }
   wrap.classList.toggle('fade', wrap.scrollHeight - wrap.clientHeight > 2);
+}
+
+/* ----------------------------------------------------------- 迷你条宽度自适应 */
+
+let miniMeasureRaf = 0;
+
+/** 量出迷你条真正需要多宽：内容宽度和标题栏最小宽度取大者 */
+function measureMiniWidth() {
+  if (!app.settings.mini) return;
+
+  const grid = $('#app').classList.contains('has-watch') ? $('#watchGrid') : $('#quotes');
+  const region = $('#quotesRegion');
+  const regionStyle = getComputedStyle(region);
+  const pad =
+    (parseFloat(regionStyle.paddingLeft) || 0) + (parseFloat(regionStyle.paddingRight) || 0);
+  // 面板左右各 1px 边框
+  const contentWidth = Math.ceil(grid.getBoundingClientRect().width + pad + 2);
+
+  const brand = $('.brand').getBoundingClientRect().width;
+  const right = $('.titlebar-right').getBoundingClientRect().width;
+  const tbStyle = getComputedStyle($('.titlebar'));
+  const tbPad = (parseFloat(tbStyle.paddingLeft) || 0) + (parseFloat(tbStyle.paddingRight) || 0);
+  const titleWidth = Math.ceil(brand + right + tbPad + 8);
+
+  window.market.miniWidth(Math.max(contentWidth, titleWidth));
+}
+
+/** 等两帧再量，确保 mini 样式和卡片布局都已经生效 */
+function scheduleMiniMeasure() {
+  if (!app.settings.mini) return;
+  cancelAnimationFrame(miniMeasureRaf);
+  miniMeasureRaf = requestAnimationFrame(() => {
+    miniMeasureRaf = requestAnimationFrame(measureMiniWidth);
+  });
 }
 
 /* ----------------------------------------------------------- 行情 / 快讯分隔条 */
@@ -554,6 +591,8 @@ function bindUI() {
     if (!app.settings.mini && $('#app').classList.contains('custom-split')) {
       paintQuoteHeight(app.settings.quoteHeight ?? 0);
     }
+    // 迷你条被手动拉宽/拉窄后，重新按内容收边
+    if (app.settings.mini) scheduleMiniMeasure();
     updateQuoteFade();
     updateStatus(app.settings.lastError || '');
   });
@@ -592,12 +631,14 @@ function subscribe() {
   });
 
   window.market.on('ui:close-sheet', () => openSheet(false));
+  window.market.on('ui:mini-measure', () => scheduleMiniMeasure());
 }
 
 function applyMiniClass(on) {
   $('#app').classList.toggle('mini', Boolean(on));
   if (on) openSheet(false);
   requestAnimationFrame(updateQuoteFade);
+  scheduleMiniMeasure();
 }
 
 function applyPassthrough(on) {
@@ -654,6 +695,7 @@ async function boot() {
   syncSettingsUI();
   bindUI();
   subscribe();
+  scheduleMiniMeasure();
 
   renderFlash(init.flashes || [], { prepend: false });
   if (!init.flashes?.length) applyFilter();

@@ -20,7 +20,10 @@ const { fetchFlash } = require('./data/flash');
 const { createIcon } = require('./icons');
 
 const DEFAULT_SIZE = { width: 408, height: 726, minWidth: 330, minHeight: 260 };
-const MINI_SIZE = { width: 620, height: 140 };
+// width 只是渲染进程量出内容宽度之前的初始值，拿到实际宽度后会立即自适应
+const MINI_SIZE = { width: 360, height: 140, minWidth: 200 };
+// 距离屏幕工作区边缘多少像素以内就吸附上去
+const SNAP_DISTANCE = 18;
 const APP_ID = 'com.maigo.marketinfo';
 
 let store;
@@ -38,8 +41,14 @@ let flashBusy = false;
 let lastError = { quotes: '', flash: '' };
 let flashPrimed = false;
 let miniBackup = null;
+// 是否真的处在迷你形态（settings 里的 mini 在窗口尺寸切换完成后才一致，用它更可靠）
+let isMini = false;
+// 迷你条当前尺寸，吸边时用它固定大小，避免 DPI 取整让窗口越挪越大
+let miniSize = null;
 let boundsTimer = null;
+let snapTimer = null;
 let suppressPersist = false;
+let suppressTimer = null;
 let notifyIcon = null;
 let hotkeys = {};
 
@@ -93,22 +102,88 @@ function normalizeBounds(saved) {
 }
 
 /** 迷你条：优先保持贴边的一侧不动，超出屏幕就往回收 */
-function miniBounds(cur) {
+function miniBounds(cur, width = MINI_SIZE.width) {
   const area = screen.getDisplayMatching(cur).workArea;
-  const width = Math.min(MINI_SIZE.width, area.width);
+  const w = Math.min(Math.max(MINI_SIZE.minWidth, Math.round(width)), area.width);
   const height = Math.min(MINI_SIZE.height, area.height);
   const anchorRight = cur.x + cur.width / 2 > area.x + area.width / 2;
-  const x = anchorRight ? cur.x + cur.width - width : cur.x;
-  return fitToWorkArea({ x, y: cur.y, width, height }, area);
+  const x = anchorRight ? cur.x + cur.width - w : cur.x;
+  return fitToWorkArea({ x, y: cur.y, width: w, height }, area);
+}
+
+/** 距离工作区边缘 SNAP_DISTANCE 以内就贴齐；同时把越界的窗口收回屏幕。无需调整时返回 null */
+function snapBounds(bounds) {
+  const area = screen.getDisplayMatching(bounds).workArea;
+  const fitted = fitToWorkArea(bounds, area);
+  const { width, height } = fitted;
+  let { x, y } = fitted;
+
+  if (x - area.x <= SNAP_DISTANCE) x = area.x;
+  else if (area.x + area.width - (x + width) <= SNAP_DISTANCE) x = area.x + area.width - width;
+
+  if (y - area.y <= SNAP_DISTANCE) y = area.y;
+  else if (area.y + area.height - (y + height) <= SNAP_DISTANCE) y = area.y + area.height - height;
+
+  const moved =
+    Math.round(bounds.x) !== fitted.x ||
+    Math.round(bounds.y) !== fitted.y ||
+    Math.round(bounds.width) !== fitted.width ||
+    Math.round(bounds.height) !== fitted.height;
+  if (!moved && x === fitted.x && y === fitted.y) return null;
+  return { x, y, width, height };
+}
+
+/** 拖动停顿后自动吸边（普通模式和迷你模式共用） */
+function scheduleSnap() {
+  if (!win || win.isDestroyed()) return;
+  clearTimeout(snapTimer);
+  snapTimer = setTimeout(() => {
+    if (!win || win.isDestroyed() || suppressPersist) return;
+    const cur = win.getBounds();
+    const next = snapBounds(cur);
+    if (!next) return;
+
+    // 显式带上尺寸，避免 setPosition 在 150% 缩放下按 outer 边界重算，导致窗口每次吸边都胖 1px
+    const size = (isMini ? miniSize : store.get('bounds')) || cur;
+    suppressPersistFor(180);
+    win.setBounds({ x: next.x, y: next.y, width: size.width, height: size.height });
+    // 迷你模式的位置不落盘，只有普通模式的窗口位置需要记住
+    if (!isMini) writeBounds();
+  }, 200);
+}
+
+/** 程序化改变窗口尺寸期间屏蔽落盘和吸边，避免把中间态写进设置 */
+function suppressPersistFor(ms) {
+  suppressPersist = true;
+  clearTimeout(suppressTimer);
+  suppressTimer = setTimeout(() => {
+    suppressPersist = false;
+  }, ms);
+}
+
+/** 保存窗口位置和尺寸；1~2px 的变化视为 150% 缩放下 getBounds 的取整误差，沿用旧尺寸 */
+function writeBounds() {
+  const next = win.getBounds();
+  const prev = store.get('bounds');
+  if (prev) {
+    const drift = Math.abs(next.width - prev.width) + Math.abs(next.height - prev.height);
+    if (drift <= 2) {
+      next.width = prev.width;
+      next.height = prev.height;
+    }
+  }
+  store.set({ bounds: next });
+}
+
+function saveBounds() {
+  if (!win || win.isDestroyed() || store.get('mini') || suppressPersist) return;
+  writeBounds();
 }
 
 function persistBounds() {
   if (!win || win.isDestroyed() || store.get('mini') || suppressPersist) return;
   clearTimeout(boundsTimer);
-  boundsTimer = setTimeout(() => {
-    if (!win || win.isDestroyed() || store.get('mini') || suppressPersist) return;
-    store.set({ bounds: win.getBounds() });
-  }, 400);
+  boundsTimer = setTimeout(saveBounds, 400);
 }
 
 /* ---------------------------------------------------------------- 取数 */
@@ -245,32 +320,69 @@ function setClickThrough(on) {
 function applyMini(on) {
   if (!win || win.isDestroyed()) return;
   const enabled = Boolean(on);
+  isMini = enabled;
 
-  // 切换期间屏蔽 resize 落盘，避免把中间态的尺寸写进设置
-  suppressPersist = true;
+  // 切换期间屏蔽 resize 落盘和吸边，避免把中间态的尺寸写进设置
+  suppressPersistFor(500);
 
   if (enabled) {
     const cur = win.getBounds();
     miniBackup = cur;
-    const target = miniBounds(cur);
+    let target = miniBounds(cur);
+    target = snapBounds(target) || target;
+    miniSize = { width: target.width, height: target.height };
     // 先放宽最小尺寸，否则 setBounds 会被旧的 minHeight 顶回去
-    win.setMinimumSize(Math.min(520, target.width), Math.min(120, target.height));
+    win.setMinimumSize(MINI_SIZE.minWidth, Math.min(120, target.height));
     win.setBounds(target);
   } else {
-    const target = miniBackup ? normalizeBounds(miniBackup) : normalizeBounds(store.get('bounds'));
+    // 以迷你条当前所在的一侧为锚点，把大窗口放回同一边
+    const cur = win.getBounds();
+    const backup = miniBackup ? normalizeBounds(miniBackup) : normalizeBounds(store.get('bounds'));
+    const area = screen.getDisplayMatching(cur).workArea;
+    const anchorRight = cur.x + cur.width / 2 > area.x + area.width / 2;
+    const x = anchorRight ? cur.x + cur.width - backup.width : cur.x;
+    const restored = fitToWorkArea({ ...backup, x }, area);
+    const target = snapBounds(restored) || restored;
+
     // 先恢复最小尺寸，再设回大窗口，顺序反过来宽度会被 mini 的 minWidth 卡住
     win.setMinimumSize(DEFAULT_SIZE.minWidth, DEFAULT_SIZE.minHeight);
     win.setBounds(target);
+    // 迷你条可能被拖到另一侧，退出后按它当前所在的边记住大窗口位置
+    store.set({ bounds: target });
     miniBackup = null;
+    miniSize = null;
   }
 
   store.set({ mini: enabled });
   if (tray) refreshTrayMenu();
   send('settings:changed', { mini: enabled });
+  // 页面此时才切到 mini 样式，通知它重新量一次内容宽度
+  if (enabled) send('ui:mini-measure');
+}
 
-  setTimeout(() => {
-    suppressPersist = false;
-  }, 500);
+/** 渲染进程量出迷你条内容宽度后调用，窗口按内容伸缩并保持贴边 */
+function applyMiniWidth(width) {
+  if (!win || win.isDestroyed() || !isMini) return;
+  const value = Math.round(Number(width));
+  if (!Number.isFinite(value) || value <= 0) return;
+
+  const cur = win.getBounds();
+  const area = screen.getDisplayMatching(cur).workArea;
+  const w = Math.min(area.width, Math.max(MINI_SIZE.minWidth, value));
+  if (Math.abs(w - cur.width) < 1) return;
+
+  // 哪边离屏幕边缘近，就以哪边为锚点伸缩，避免窗口突然“跳”到中间
+  const gapLeft = cur.x - area.x;
+  const gapRight = area.x + area.width - (cur.x + cur.width);
+  const anchorRight = gapRight <= gapLeft;
+  const x = anchorRight ? area.x + area.width - gapRight - w : cur.x;
+
+  let next = fitToWorkArea({ x, y: cur.y, width: w, height: cur.height }, area);
+  next = snapBounds(next) || next;
+
+  miniSize = { width: next.width, height: next.height };
+  suppressPersistFor(300);
+  win.setBounds(next);
 }
 
 function toggleVisibility() {
@@ -403,6 +515,9 @@ function quitApp() {
   app.isQuitting = true;
   clearTimeout(quoteTimer);
   clearTimeout(flashTimer);
+  clearTimeout(boundsTimer);
+  clearTimeout(snapTimer);
+  clearTimeout(suppressTimer);
   if (win && !win.isDestroyed()) win.destroy();
   app.quit();
 }
@@ -449,9 +564,13 @@ function createWindow() {
     scheduleFlash();
   });
 
-  win.on('move', persistBounds);
+  win.on('move', () => {
+    persistBounds();
+    scheduleSnap();
+  });
   win.on('resize', () => {
     persistBounds();
+    scheduleSnap();
     send('window:resized', { mini: store.get('mini') });
   });
   win.on('show', () => {
@@ -543,6 +662,7 @@ function registerIpc() {
       pollFlash();
     }
   });
+  ipcMain.handle('window:mini-width', (_e, width) => applyMiniWidth(width));
 }
 
 /* ---------------------------------------------------------------- 启动 */
@@ -585,6 +705,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on('will-quit', () => {
     clearTimeout(quoteTimer);
     clearTimeout(flashTimer);
+    clearTimeout(boundsTimer);
+    clearTimeout(snapTimer);
+    clearTimeout(suppressTimer);
     globalShortcut.unregisterAll();
   });
 }
