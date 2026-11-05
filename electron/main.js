@@ -18,10 +18,13 @@ const { GROUPS } = require('./data/symbols');
 const { fetchQuotes } = require('./data/quotes');
 const { fetchFlash } = require('./data/flash');
 const { createIcon } = require('./icons');
+const taskbarEmbed = require('./taskbar-embed');
 
 const DEFAULT_SIZE = { width: 408, height: 726, minWidth: 330, minHeight: 260 };
 // width 只是渲染进程量出内容宽度之前的初始值，拿到实际宽度后会立即自适应
 const MINI_SIZE = { width: 360, height: 140, minWidth: 200 };
+// 任务栏模式：高度由系统任务栏厚度决定，这里只约束宽度
+const TASKBAR_SIZE = { width: 380, minWidth: 120, minHeight: 30 };
 // 距离屏幕工作区边缘多少像素以内就吸附上去
 const SNAP_DISTANCE = 18;
 const APP_ID = 'com.maigo.marketinfo';
@@ -45,6 +48,15 @@ let miniBackup = null;
 let isMini = false;
 // 迷你条当前尺寸，吸边时用它固定大小，避免 DPI 取整让窗口越挪越大
 let miniSize = null;
+// 任务栏模式：嵌在系统任务栏里的横条
+let isTaskbar = false;
+let taskbarBackup = null;
+let taskbarSize = null;
+let taskbarTimer = null;
+// 是否已经用 SetParent 挂进任务栏（实验性真嵌入）
+let embedded = false;
+// 普通任务栏条会被任务栏的置顶抢到后面，定时重新抬到最上层
+let taskbarKeeper = null;
 let boundsTimer = null;
 let snapTimer = null;
 let suppressPersist = false;
@@ -101,6 +113,78 @@ function normalizeBounds(saved) {
   return fitToWorkArea(rect, screen.getDisplayMatching(rect).workArea);
 }
 
+const clamp = (value, min, max) => Math.min(Math.max(min, value), Math.max(min, max));
+
+/**
+ * 取当前屏幕任务栏的位置和厚度（逻辑像素）。
+ * 任务栏自动隐藏或没有任务栏时返回 null。
+ */
+function taskbarGeometry(bounds = null) {
+  const display = bounds ? screen.getDisplayMatching(bounds) : screen.getPrimaryDisplay();
+  const b = display.bounds;
+  const a = display.workArea;
+  const bottom = b.y + b.height - (a.y + a.height);
+  const top = a.y - b.y;
+  const thickness = Math.max(bottom, top);
+  if (thickness < 24) return null;
+
+  const atBottom = bottom >= top;
+  return {
+    area: a,
+    thickness,
+    y: atBottom ? b.y + b.height - thickness : b.y,
+  };
+}
+
+/** 任务栏条当前应该在屏幕上的位置（逻辑像素，含任务栏厚度） */
+function taskbarBounds() {
+  if (!win || win.isDestroyed()) return null;
+  const cur = win.getBounds();
+  const bar = taskbarGeometry(cur);
+  if (!bar) return null;
+  return { x: cur.x, y: bar.y, width: cur.width, height: bar.thickness };
+}
+
+/**
+ * 计算真嵌入所需的物理像素参数。
+ * 目前只支持主屏（副屏任务栏是另一个窗口，位置换算容易出错）。
+ */
+function embedGeometry() {
+  if (!win || win.isDestroyed()) return null;
+  const bounds = win.getBounds();
+  const display = screen.getDisplayMatching(bounds);
+  if (display.id !== screen.getPrimaryDisplay().id) return null;
+
+  const bar = taskbarGeometry(bounds);
+  if (!bar) return null;
+
+  const rect = { x: bounds.x, y: bar.y, width: bounds.width, height: bar.thickness };
+  return {
+    rect,
+    physical: screen.dipToScreenRect(win, rect),
+    origin: screen.dipToScreenPoint({ x: display.bounds.x, y: bar.y }),
+  };
+}
+
+function attachEmbed() {
+  if (!isTaskbar || embedded || !store.get('taskbarEmbed')) return false;
+  if (!win || win.isDestroyed() || !taskbarEmbed.available()) return false;
+
+  const geo = embedGeometry();
+  if (!geo) return false;
+
+  const ok = taskbarEmbed.attach(win.getNativeWindowHandle(), geo.physical, geo.origin);
+  embedded = Boolean(ok);
+  return embedded;
+}
+
+function detachEmbed(rect = taskbarBounds()) {
+  if (!embedded) return;
+  const physical = rect ? screen.dipToScreenRect(win, rect) : null;
+  taskbarEmbed.detach(physical);
+  embedded = false;
+}
+
 /** 迷你条：优先保持贴边的一侧不动，超出屏幕就往回收 */
 function miniBounds(cur, width = MINI_SIZE.width) {
   const area = screen.getDisplayMatching(cur).workArea;
@@ -135,10 +219,10 @@ function snapBounds(bounds) {
 
 /** 拖动停顿后自动吸边（普通模式和迷你模式共用） */
 function scheduleSnap() {
-  if (!win || win.isDestroyed()) return;
+  if (!win || win.isDestroyed() || isTaskbar) return;
   clearTimeout(snapTimer);
   snapTimer = setTimeout(() => {
-    if (!win || win.isDestroyed() || suppressPersist) return;
+    if (!win || win.isDestroyed() || suppressPersist || isTaskbar) return;
     const cur = win.getBounds();
     const next = snapBounds(cur);
     if (!next) return;
@@ -176,12 +260,12 @@ function writeBounds() {
 }
 
 function saveBounds() {
-  if (!win || win.isDestroyed() || store.get('mini') || suppressPersist) return;
+  if (!win || win.isDestroyed() || store.get('mini') || isTaskbar || suppressPersist) return;
   writeBounds();
 }
 
 function persistBounds() {
-  if (!win || win.isDestroyed() || store.get('mini') || suppressPersist) return;
+  if (!win || win.isDestroyed() || store.get('mini') || isTaskbar || suppressPersist) return;
   clearTimeout(boundsTimer);
   boundsTimer = setTimeout(saveBounds, 400);
 }
@@ -320,6 +404,8 @@ function setClickThrough(on) {
 function applyMini(on) {
   if (!win || win.isDestroyed()) return;
   const enabled = Boolean(on);
+  // 迷你模式和任务栏模式互斥，先从任务栏条回到普通窗口再收缩
+  if (enabled && isTaskbar) applyTaskbar(false);
   isMini = enabled;
 
   // 切换期间屏蔽 resize 落盘和吸边，避免把中间态的尺寸写进设置
@@ -360,13 +446,45 @@ function applyMini(on) {
   if (enabled) send('ui:mini-measure');
 }
 
-/** 渲染进程量出迷你条内容宽度后调用，窗口按内容伸缩并保持贴边 */
+/** 渲染进程量出迷你条 / 任务栏条内容宽度后调用，窗口按内容伸缩并保持贴边 */
 function applyMiniWidth(width) {
-  if (!win || win.isDestroyed() || !isMini) return;
+  if (!win || win.isDestroyed() || (!isMini && !isTaskbar)) return;
   const value = Math.round(Number(width));
   if (!Number.isFinite(value) || value <= 0) return;
 
   const cur = win.getBounds();
+
+  // 任务栏模式：只改宽度，高度和贴底位置保持不动
+  if (isTaskbar) {
+    const bar = taskbarGeometry(cur);
+    if (!bar) return;
+    const w = Math.min(bar.area.width - 16, Math.max(TASKBAR_SIZE.minWidth, value));
+    if (Math.abs(w - cur.width) < 1) return;
+
+    const savedX = Number(store.get('taskbarX'));
+    const x = clamp(
+      Number.isFinite(savedX) ? savedX : cur.x,
+      bar.area.x,
+      bar.area.x + bar.area.width - w,
+    );
+    const rect = { x, y: bar.y, width: w, height: bar.thickness };
+    taskbarSize = { width: w, height: bar.thickness };
+    suppressPersistFor(300);
+
+    if (embedded) {
+      const display = screen.getDisplayMatching(cur);
+      const physical = screen.dipToScreenRect(win, rect);
+      const origin = screen.dipToScreenPoint({ x: display.bounds.x, y: bar.y });
+      taskbarEmbed.move(physical, origin);
+    } else {
+      win.setBounds(rect);
+      win.moveTop();
+    }
+
+    store.set({ taskbarX: x, taskbarWidth: w });
+    return;
+  }
+
   const area = screen.getDisplayMatching(cur).workArea;
   const w = Math.min(area.width, Math.max(MINI_SIZE.minWidth, value));
   if (Math.abs(w - cur.width) < 1) return;
@@ -383,6 +501,202 @@ function applyMiniWidth(width) {
   miniSize = { width: next.width, height: next.height };
   suppressPersistFor(300);
   win.setBounds(next);
+}
+
+/**
+ * 缩到任务栏：用迷你样式贴在系统任务栏里显示（类似鲁大师的任务栏监控条）。
+ * 再次调用即回到原来的普通窗口。
+ */
+function applyTaskbar(on) {
+  if (!win || win.isDestroyed()) return;
+  const enabled = Boolean(on);
+  if (enabled === isTaskbar) return;
+
+  // 迷你条和任务栏条互斥，先恢复普通窗口再进任务栏
+  if (enabled && isMini) applyMini(false);
+
+  const bar = enabled ? taskbarGeometry(win.getBounds()) : null;
+  if (enabled && !bar) {
+    // 任务栏自动隐藏时没有可用的条带位置，退回迷你模式
+    applyMini(true);
+    return;
+  }
+
+  // 切换期间既不落盘也不吸边
+  suppressPersistFor(600);
+
+  if (enabled) {
+    taskbarBackup = win.getBounds();
+    isTaskbar = true;
+
+    const savedW = Math.round(Number(store.get('taskbarWidth')) || TASKBAR_SIZE.width);
+    const width = clamp(savedW, TASKBAR_SIZE.minWidth, bar.area.width - 16);
+    const savedX = Number(store.get('taskbarX'));
+    const x = clamp(
+      Number.isFinite(savedX) ? savedX : bar.area.x + 8,
+      bar.area.x,
+      bar.area.x + bar.area.width - width,
+    );
+
+    // 任务栏是 topmost，普通置顶盖不住；screen-saver 层级才在它上面
+    win.setAlwaysOnTop(true, 'screen-saver');
+    win.setResizable(false);
+    win.setMinimumSize(TASKBAR_SIZE.minWidth, TASKBAR_SIZE.minHeight);
+    taskbarSize = { width, height: bar.thickness };
+    win.setBounds({ x, y: bar.y, width, height: bar.thickness });
+    win.moveTop();
+    store.set({ taskbarX: x, taskbarWidth: width });
+
+    // 设置里开了实验性真嵌入才挂进任务栏
+    if (store.get('taskbarEmbed') && !attachEmbed()) {
+      showToast({
+        title: '没能嵌入任务栏',
+        body: '已改用普通任务栏条。真嵌入需要 Windows 主屏，且依赖的原生模块要能加载。',
+      });
+    }
+  } else {
+    isTaskbar = false;
+
+    const backup = taskbarBackup ? normalizeBounds(taskbarBackup) : normalizeBounds(store.get('bounds'));
+    const area = screen.getDisplayMatching(backup).workArea;
+    const target = fitToWorkArea(backup, area);
+
+    // 先摘掉任务栏父子关系，再按顶层窗口恢复尺寸
+    detachEmbed();
+    win.setResizable(true);
+    win.setMinimumSize(DEFAULT_SIZE.minWidth, DEFAULT_SIZE.minHeight);
+    win.setBounds(target);
+    setAlwaysOnTop(store.get('alwaysOnTop'));
+    taskbarBackup = null;
+    taskbarSize = null;
+  }
+
+  store.set({ taskbar: enabled });
+  if (enabled) startTaskbarKeeper();
+  else stopTaskbarKeeper();
+  if (tray) refreshTrayMenu();
+  send('settings:changed', { taskbar: enabled, mini: store.get('mini'), taskbarEmbedded: embedded });
+  // 页面切到新样式后重新量一次内容宽度
+  send('ui:mini-measure');
+}
+
+/** 实验性开关：把任务栏条真正挂进任务栏窗口树 */
+function setTaskbarEmbed(on) {
+  const enabled = Boolean(on);
+
+  if (enabled && !taskbarEmbed.available()) {
+    store.set({ taskbarEmbed: false });
+    showToast({
+      title: '真嵌入不可用',
+      body: '当前系统没能加载原生模块，仍使用普通任务栏条。',
+    });
+    send('settings:changed', { taskbarEmbed: false, taskbarEmbedded: false });
+    if (tray) refreshTrayMenu();
+    return;
+  }
+
+  store.set({ taskbarEmbed: enabled });
+
+  if (isTaskbar) {
+    if (enabled) {
+      if (!attachEmbed()) {
+        showToast({
+          title: '没能嵌入任务栏',
+          body: '已改用普通任务栏条。真嵌入目前只支持任务栏在主屏且任务栏未自动隐藏。',
+        });
+      }
+    } else {
+      const rect = taskbarBounds();
+      detachEmbed(rect);
+      if (rect) {
+        suppressPersistFor(300);
+        win.setBounds(rect);
+        win.moveTop();
+      }
+    }
+  }
+
+  if (tray) refreshTrayMenu();
+  send('settings:changed', { taskbarEmbed: enabled, taskbarEmbedded: embedded });
+}
+
+/** 普通任务栏条会被任务栏重新压到下面，定时抬回最上层（真嵌入时不需要） */
+function startTaskbarKeeper() {
+  stopTaskbarKeeper();
+  taskbarKeeper = setInterval(() => {
+    if (!win || win.isDestroyed() || !isTaskbar) {
+      stopTaskbarKeeper();
+      return;
+    }
+    if (!embedded) win.moveTop();
+  }, 1500);
+}
+
+function stopTaskbarKeeper() {
+  if (taskbarKeeper) clearInterval(taskbarKeeper);
+  taskbarKeeper = null;
+}
+
+/* 手动拖动任务栏条：子窗口没法用系统拖动，统一由渲染进程发位移、主进程改坐标 */
+let taskbarDrag = null;
+
+function handleTaskbarDrag(phase, dx) {
+  if (!win || win.isDestroyed() || !isTaskbar) return;
+
+  if (phase === 'start') {
+    taskbarDrag = win.getBounds();
+    return;
+  }
+  if (phase === 'end') {
+    taskbarDrag = null;
+    return;
+  }
+  if (!taskbarDrag) taskbarDrag = win.getBounds();
+
+  const bar = taskbarGeometry(win.getBounds());
+  if (!bar) return;
+
+  const size = taskbarSize || { width: taskbarDrag.width, height: bar.thickness };
+  const width = clamp(size.width, TASKBAR_SIZE.minWidth, bar.area.width - 16);
+  const x = clamp(taskbarDrag.x + (Number(dx) || 0), bar.area.x, bar.area.x + bar.area.width - width);
+  const rect = { x, y: bar.y, width, height: bar.thickness };
+
+  suppressPersistFor(120);
+  if (embedded) {
+    const display = screen.getDisplayMatching(win.getBounds());
+    const physical = screen.dipToScreenRect(win, rect);
+    const origin = screen.dipToScreenPoint({ x: display.bounds.x, y: bar.y });
+    taskbarEmbed.move(physical, origin);
+  } else {
+    win.setBounds(rect);
+    win.moveTop();
+  }
+
+  store.set({ taskbarX: x, taskbarWidth: width });
+}
+
+/** 任务栏条被拖动后：贴回任务栏、夹在屏幕内，并记住横向位置 */
+function scheduleTaskbarPersist() {
+  if (!isTaskbar || embedded) return;
+  clearTimeout(taskbarTimer);
+  taskbarTimer = setTimeout(() => {
+    if (!win || win.isDestroyed() || !isTaskbar) return;
+    const bar = taskbarGeometry(win.getBounds());
+    if (!bar) return;
+
+    const cur = win.getBounds();
+    const size = taskbarSize || { width: cur.width, height: bar.thickness };
+    const width = clamp(size.width, TASKBAR_SIZE.minWidth, bar.area.width - 16);
+    const x = clamp(cur.x, bar.area.x, bar.area.x + bar.area.width - width);
+    const next = { x, y: bar.y, width, height: bar.thickness };
+
+    store.set({ taskbarX: x, taskbarWidth: width });
+    if (x !== cur.x || next.y !== cur.y || next.height !== cur.height) {
+      suppressPersistFor(180);
+      win.setBounds(next);
+      win.moveTop();
+    }
+  }, 220);
 }
 
 function toggleVisibility() {
@@ -431,6 +745,8 @@ function applySettings(patch = {}) {
   }
   if ('clickThrough' in next) setClickThrough(next.clickThrough);
   if ('mini' in next) applyMini(next.mini);
+  if ('taskbar' in next) applyTaskbar(next.taskbar);
+  if ('taskbarEmbed' in next) setTaskbarEmbed(next.taskbarEmbed);
   if ('autoLaunch' in next) setAutoLaunch(next.autoLaunch);
 
   if ('importantOnly' in next) store.set({ importantOnly: Boolean(next.importantOnly) });
@@ -482,6 +798,13 @@ function refreshTrayMenu() {
       { label: win && win.isVisible() ? '隐藏窗口' : '显示窗口', click: toggleVisibility },
       { type: 'separator' },
       { label: '迷你模式', type: 'checkbox', checked: s.mini, click: () => applyMini(!s.mini) },
+      { label: '任务栏模式', type: 'checkbox', checked: s.taskbar, click: () => applyTaskbar(!s.taskbar) },
+      {
+        label: '真嵌入任务栏（实验性）',
+        type: 'checkbox',
+        checked: s.taskbarEmbed,
+        click: () => setTaskbarEmbed(!s.taskbarEmbed),
+      },
       { label: '点击穿透', type: 'checkbox', checked: s.clickThrough, click: () => setClickThrough(!s.clickThrough) },
       { label: '始终置顶', type: 'checkbox', checked: s.alwaysOnTop, click: () => applyToggle('alwaysOnTop') },
       { label: '开机自启', type: 'checkbox', checked: s.autoLaunch, click: () => setAutoLaunch(!s.autoLaunch) },
@@ -513,11 +836,13 @@ function applyToggle(key) {
 
 function quitApp() {
   app.isQuitting = true;
+  stopTaskbarKeeper();
   clearTimeout(quoteTimer);
   clearTimeout(flashTimer);
   clearTimeout(boundsTimer);
   clearTimeout(snapTimer);
   clearTimeout(suppressTimer);
+  clearTimeout(taskbarTimer);
   if (win && !win.isDestroyed()) win.destroy();
   app.quit();
 }
@@ -555,7 +880,8 @@ function createWindow() {
   win.once('ready-to-show', () => {
     setOpacity(s.opacity);
     setAlwaysOnTop(s.alwaysOnTop);
-    if (s.mini) applyMini(true);
+    if (s.taskbar) applyTaskbar(true);
+    else if (s.mini) applyMini(true);
     if (!process.argv.includes('--hidden')) win.show();
     if (s.clickThrough) setClickThrough(true);
     pollQuotes();
@@ -565,10 +891,19 @@ function createWindow() {
   });
 
   win.on('move', () => {
+    if (isTaskbar) {
+      scheduleTaskbarPersist();
+      return;
+    }
     persistBounds();
     scheduleSnap();
   });
   win.on('resize', () => {
+    if (isTaskbar) {
+      scheduleTaskbarPersist();
+      send('window:resized', { mini: false });
+      return;
+    }
     persistBounds();
     scheduleSnap();
     send('window:resized', { mini: store.get('mini') });
@@ -586,6 +921,25 @@ function createWindow() {
       e.preventDefault();
       win.hide();
     }
+  });
+
+  // 真嵌入时任务栏销毁会连带销毁子窗口（例如 Explorer 重启），稍后按设置重建
+  win.on('closed', () => {
+    win = null;
+    embedded = false;
+    isTaskbar = false;
+    stopTaskbarKeeper();
+    taskbarBackup = null;
+    taskbarSize = null;
+    if (tray) refreshTrayMenu();
+    if (app.isQuitting) return;
+
+    setTimeout(() => {
+      if (!win && !app.isQuitting) {
+        console.log('[window] 窗口随任务栏销毁，正在重建');
+        createWindow();
+      }
+    }, 1500);
   });
 }
 
@@ -644,6 +998,7 @@ function registerIpc() {
     errors: lastError,
     hotkeys,
     version: app.getVersion(),
+    taskbarEmbedded: embedded,
   }));
 
   ipcMain.handle('settings:set', (_e, patch) => applySettings(patch || {}));
@@ -657,12 +1012,15 @@ function registerIpc() {
     if (name === 'hide') win && win.hide();
     if (name === 'quit') quitApp();
     if (name === 'mini') applyMini(!store.get('mini'));
+    if (name === 'taskbar') applyTaskbar(!isTaskbar);
+    if (name === 'taskbar-embed') setTaskbarEmbed(!store.get('taskbarEmbed'));
     if (name === 'refresh') {
       pollQuotes();
       pollFlash();
     }
   });
   ipcMain.handle('window:mini-width', (_e, width) => applyMiniWidth(width));
+  ipcMain.on('window:taskbar-drag', (_e, phase, dx) => handleTaskbarDrag(phase, dx));
 }
 
 /* ---------------------------------------------------------------- 启动 */
@@ -703,11 +1061,13 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('will-quit', () => {
+    stopTaskbarKeeper();
     clearTimeout(quoteTimer);
     clearTimeout(flashTimer);
     clearTimeout(boundsTimer);
     clearTimeout(snapTimer);
     clearTimeout(suppressTimer);
+    clearTimeout(taskbarTimer);
     globalShortcut.unregisterAll();
   });
 }

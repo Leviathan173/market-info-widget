@@ -143,9 +143,14 @@ function updateQuoteFade() {
 
 let miniMeasureRaf = 0;
 
+/** 迷你条和任务栏条都是横排紧凑布局，需要按内容量宽度 */
+function isCompact() {
+  return Boolean(app.settings.mini || app.settings.taskbar);
+}
+
 /** 量出迷你条真正需要多宽：内容宽度和标题栏最小宽度取大者 */
 function measureMiniWidth() {
-  if (!app.settings.mini) return;
+  if (!isCompact()) return;
 
   const grid = $('#app').classList.contains('has-watch') ? $('#watchGrid') : $('#quotes');
   const region = $('#quotesRegion');
@@ -155,18 +160,22 @@ function measureMiniWidth() {
   // 面板左右各 1px 边框
   const contentWidth = Math.ceil(grid.getBoundingClientRect().width + pad + 2);
 
-  const brand = $('.brand').getBoundingClientRect().width;
-  const right = $('.titlebar-right').getBoundingClientRect().width;
-  const tbStyle = getComputedStyle($('.titlebar'));
-  const tbPad = (parseFloat(tbStyle.paddingLeft) || 0) + (parseFloat(tbStyle.paddingRight) || 0);
-  const titleWidth = Math.ceil(brand + right + tbPad + 8);
+  // 任务栏模式没有标题栏，宽度只看内容
+  let titleWidth = 0;
+  if (!app.settings.taskbar) {
+    const brand = $('.brand').getBoundingClientRect().width;
+    const right = $('.titlebar-right').getBoundingClientRect().width;
+    const tbStyle = getComputedStyle($('.titlebar'));
+    const tbPad = (parseFloat(tbStyle.paddingLeft) || 0) + (parseFloat(tbStyle.paddingRight) || 0);
+    titleWidth = Math.ceil(brand + right + tbPad + 8);
+  }
 
   window.market.miniWidth(Math.max(contentWidth, titleWidth));
 }
 
 /** 等两帧再量，确保 mini 样式和卡片布局都已经生效 */
 function scheduleMiniMeasure() {
-  if (!app.settings.mini) return;
+  if (!isCompact()) return;
   cancelAnimationFrame(miniMeasureRaf);
   miniMeasureRaf = requestAnimationFrame(() => {
     miniMeasureRaf = requestAnimationFrame(measureMiniWidth);
@@ -459,6 +468,7 @@ function syncSettingsUI() {
 
   $('#alwaysOnTop').checked = Boolean(s.alwaysOnTop);
   $('#clickThrough').checked = Boolean(s.clickThrough);
+  $('#taskbarEmbed').checked = Boolean(s.taskbarEmbed);
   $('#autoLaunch').checked = Boolean(s.autoLaunch);
   $('#notify').checked = Boolean(s.notify);
   applyPassthrough(s.clickThrough);
@@ -487,9 +497,49 @@ function bindUI() {
       const act = btn.dataset.act;
       if (act === 'settings') openSheet($('#sheet').hidden);
       else if (act === 'mini') window.market.action('mini');
+      else if (act === 'taskbar') window.market.action('taskbar');
       else if (act === 'hide') window.market.action('hide');
     });
   }
+
+  // 任务栏条右侧的还原按钮
+  $('[data-act="restore-taskbar"]').addEventListener('click', () => window.market.action('taskbar'));
+
+  // 任务栏条：拖动左侧手柄横向移动（子窗口不能用系统拖动区）
+  const grip = $('.taskbar-grip');
+  let gripDrag = null;
+  grip.addEventListener('pointerdown', (e) => {
+    if (!app.settings.taskbar || e.button !== 0) return;
+    gripDrag = { x: e.screenX, id: e.pointerId, moved: false };
+    try {
+      grip.setPointerCapture(e.pointerId);
+    } catch {
+      /* 忽略 */
+    }
+    e.preventDefault();
+  });
+  grip.addEventListener('pointermove', (e) => {
+    if (!gripDrag) return;
+    const dx = Math.round(e.screenX - gripDrag.x);
+    if (!gripDrag.moved && Math.abs(dx) > 1) {
+      gripDrag.moved = true;
+      window.market.taskbarDrag('start');
+    }
+    if (gripDrag.moved) window.market.taskbarDrag('move', dx);
+  });
+  const endGrip = () => {
+    if (!gripDrag) return;
+    const { id, moved } = gripDrag;
+    gripDrag = null;
+    try {
+      grip.releasePointerCapture(id);
+    } catch {
+      /* 忽略 */
+    }
+    if (moved) window.market.taskbarDrag('end');
+  };
+  grip.addEventListener('pointerup', endGrip);
+  grip.addEventListener('pointercancel', endGrip);
 
   $('[data-act="close-sheet"]').addEventListener('click', () => openSheet(false));
   $('[data-act="quit"]').addEventListener('click', () => window.market.action('quit'));
@@ -559,6 +609,7 @@ function bindUI() {
   for (const [id, key] of [
     ['alwaysOnTop', 'alwaysOnTop'],
     ['clickThrough', 'clickThrough'],
+    ['taskbarEmbed', 'taskbarEmbed'],
     ['autoLaunch', 'autoLaunch'],
     ['notify', 'notify'],
   ]) {
@@ -588,11 +639,11 @@ function bindUI() {
 
   window.addEventListener('resize', () => {
     // 窗口变矮时把自定义高度收回可视范围，变大时按原意图重新展开
-    if (!app.settings.mini && $('#app').classList.contains('custom-split')) {
+    if (!isCompact() && $('#app').classList.contains('custom-split')) {
       paintQuoteHeight(app.settings.quoteHeight ?? 0);
     }
-    // 迷你条被手动拉宽/拉窄后，重新按内容收边
-    if (app.settings.mini) scheduleMiniMeasure();
+    // 迷你条 / 任务栏条被手动拉宽拉窄后，重新按内容收边
+    if (isCompact()) scheduleMiniMeasure();
     updateQuoteFade();
     updateStatus(app.settings.lastError || '');
   });
@@ -621,6 +672,8 @@ function subscribe() {
     Object.assign(app.settings, patch);
 
     if ('mini' in patch) applyMiniClass(patch.mini);
+    if ('taskbar' in patch) applyTaskbarClass(patch.taskbar);
+    if ('taskbarEmbedded' in patch) applyEmbedClass(patch.taskbarEmbedded);
     if ('clickThrough' in patch) applyPassthrough(patch.clickThrough);
 
     if ('groups' in patch && (patch.groups || []).join(',') !== before) {
@@ -638,6 +691,19 @@ function applyMiniClass(on) {
   $('#app').classList.toggle('mini', Boolean(on));
   if (on) openSheet(false);
   requestAnimationFrame(updateQuoteFade);
+  scheduleMiniMeasure();
+}
+
+function applyTaskbarClass(on) {
+  $('#app').classList.toggle('taskbar', Boolean(on));
+  if (on) openSheet(false);
+  requestAnimationFrame(updateQuoteFade);
+  scheduleMiniMeasure();
+}
+
+/** 真嵌入时窗口是任务栏的子窗口，不能用系统的拖动区域，隐藏拖动手柄 */
+function applyEmbedClass(on) {
+  $('#app').classList.toggle('taskbar-embed', Boolean(on));
   scheduleMiniMeasure();
 }
 
@@ -684,10 +750,12 @@ async function boot() {
   app.filter = app.settings.importantOnly ? 'important' : 'all';
 
   applyMiniClass(app.settings.mini);
+  applyTaskbarClass(app.settings.taskbar);
+  applyEmbedClass(init.taskbarEmbedded);
   buildQuoteSkeleton();
   applyQuotes(init.quotes || [], init.lastQuoteAt);
 
-  if (!app.settings.mini && Number.isFinite(app.settings.quoteHeight)) {
+  if (!app.settings.mini && !app.settings.taskbar && Number.isFinite(app.settings.quoteHeight)) {
     paintQuoteHeight(app.settings.quoteHeight);
   }
   initSplitter();
@@ -700,6 +768,10 @@ async function boot() {
   renderFlash(init.flashes || [], { prepend: false });
   if (!init.flashes?.length) applyFilter();
   updateStatus(init.errors?.quotes || '');
+
+  // 首次渲染时字体和行情还没铺满，等布局稳定后再量一次宽度
+  setTimeout(scheduleMiniMeasure, 700);
+  if (document.fonts?.ready) document.fonts.ready.then(scheduleMiniMeasure);
 
   startClock();
 }

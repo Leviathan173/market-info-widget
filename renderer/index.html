@@ -21,6 +21,12 @@
         <div class="titlebar-right">
           <span class="clock" id="clock">--:--:--</span>
           <div class="tb-actions">
+            <button class="icon-btn" data-act="taskbar" title="缩到任务栏（嵌在任务栏里显示）">
+              <svg viewBox="0 0 16 16">
+                <rect x="2.5" y="9.5" width="11" height="3.6" rx="1.1" />
+                <path d="M5 4.6h6" />
+              </svg>
+            </button>
             <button class="icon-btn" data-act="mini" title="迷你模式（Ctrl+Alt+M）">
               <svg viewBox="0 0 16 16"><rect x="2.5" y="5" width="11" height="6" rx="1.4" /></svg>
             </button>
@@ -38,6 +44,12 @@
           </div>
         </div>
       </header>
+
+      <button class="taskbar-restore" data-act="restore-taskbar" title="恢复到普通窗口">
+        <svg viewBox="0 0 16 16"><path d="M6 3.5h6.5V10M10 12.5H3.5V6" /></svg>
+      </button>
+
+      <div class="taskbar-grip" title="拖动调整任务栏条位置"><i></i><i></i><i></i></div>
 
       <section class="quotes-region" id="quotesRegion">
         <div class="watch-block">
@@ -121,6 +133,7 @@
           <div class="field switches">
             <label class="switch-row"><span>始终置顶</span><input type="checkbox" id="alwaysOnTop" /><i></i></label>
             <label class="switch-row"><span>点击穿透</span><input type="checkbox" id="clickThrough" /><i></i></label>
+            <label class="switch-row"><span>实验性：真嵌入任务栏</span><input type="checkbox" id="taskbarEmbed" /><i></i></label>
             <label class="switch-row"><span>开机自启</span><input type="checkbox" id="autoLaunch" /><i></i></label>
             <label class="switch-row"><span>重要快讯系统通知</span><input type="checkbox" id="notify" /><i></i></label>
           </div>

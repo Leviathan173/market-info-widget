@@ -1062,3 +1062,176 @@ kbd {
 .app.mini .q-range {
   margin-top: 5px;
 }
+
+/* ----------------------------------------------------------- 任务栏模式 */
+
+.app.taskbar {
+  border-radius: 0;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app.taskbar .titlebar,
+.app.taskbar .feed,
+.app.taskbar .splitter,
+.app.taskbar .statusbar,
+.app.taskbar .q-group,
+.app.taskbar .watch-head,
+.app.taskbar .watch-hint {
+  display: none;
+}
+
+.app.taskbar .quotes-region {
+  flex: 1 1 auto;
+  height: 100% !important;
+  max-height: none;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  padding: 0 24px 0 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.app.taskbar .quotes-region::-webkit-scrollbar {
+  display: none;
+}
+
+.app.taskbar .watch-block,
+.app.taskbar .quotes-wrap {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  max-height: none;
+  overflow: visible;
+}
+
+.app.taskbar.has-watch .quotes-wrap {
+  display: none;
+}
+
+.app.taskbar:not(.has-watch) .watch-block {
+  display: none;
+}
+
+.app.taskbar .quotes {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: max-content;
+}
+
+.app.taskbar .q {
+  min-width: 0;
+  padding: 2px 7px 3px;
+  border-radius: 5px;
+  background: rgba(16, 20, 28, 0.62);
+  border-color: rgba(255, 255, 255, 0.08);
+  -webkit-app-region: no-drag;
+}
+
+.app.taskbar .q:hover {
+  background: rgba(32, 38, 50, 0.8);
+}
+
+.app.taskbar .q.watched {
+  background: rgba(224, 182, 104, 0.16);
+  border-color: rgba(224, 182, 104, 0.38);
+}
+
+.app.taskbar .q-top {
+  gap: 4px;
+}
+
+.app.taskbar .q-name {
+  font-size: 10px;
+}
+
+.app.taskbar .q-pct {
+  font-size: 8.5px;
+  padding: 0 2px;
+}
+
+.app.taskbar .q-price {
+  font-size: 12px;
+  line-height: 1.2;
+  margin-top: 1px;
+}
+
+.app.taskbar .q-range {
+  display: none;
+}
+
+.taskbar-restore {
+  display: none;
+}
+
+.taskbar-grip {
+  display: none;
+}
+
+.app.taskbar .taskbar-grip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-right: 1px solid var(--line);
+  background: rgba(16, 20, 28, 0.5);
+  cursor: grab;
+}
+
+.app.taskbar .taskbar-grip:active {
+  cursor: grabbing;
+}
+
+.app.taskbar .taskbar-grip:active {
+  cursor: grabbing;
+}
+
+.app.taskbar .taskbar-grip i {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--mute);
+}
+
+.app.taskbar .taskbar-restore {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: linear-gradient(90deg, rgba(10, 13, 19, 0.25), rgba(10, 13, 19, 0.92));
+  color: var(--dim);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.app.taskbar .taskbar-restore:hover {
+  color: var(--text);
+  background: rgba(224, 182, 104, 0.18);
+}
+
+.taskbar-restore svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}

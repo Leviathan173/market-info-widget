@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('market', {
   miniWidth: (width) => ipcRenderer.invoke('window:mini-width', width),
   openFlash: (id) => ipcRenderer.invoke('flash:open', id),
   openLink: (url) => ipcRenderer.invoke('link:open', url),
+  taskbarDrag: (phase, dx) => ipcRenderer.send('window:taskbar-drag', phase, dx),
   on: (channel, cb) => {
     if (!PUSH_CHANNELS.includes(channel)) return () => {};
     const handler = (_event, payload) => cb(payload);
