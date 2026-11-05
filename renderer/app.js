@@ -130,6 +130,7 @@ function buildQuoteSkeleton() {
   }
 
   // 迷你条的宽度取决于展示的卡片数量，重建后重新量一次
+  carousel.page = 0;
   scheduleMiniMeasure();
 }
 
@@ -155,13 +156,17 @@ function isCompact() {
 function measureMiniWidth() {
   if (!isCompact()) return;
 
+  // 关注超过一屏时先分好页，宽度按最宽的一页算
+  const paged = syncWatchCarousel();
+
   const grid = $('#app').classList.contains('has-watch') ? $('#watchGrid') : $('#quotes');
   const region = $('#quotesRegion');
   const regionStyle = getComputedStyle(region);
   const pad =
     (parseFloat(regionStyle.paddingLeft) || 0) + (parseFloat(regionStyle.paddingRight) || 0);
   // 面板左右各 1px 边框
-  const contentWidth = Math.ceil(grid.getBoundingClientRect().width + pad + 2);
+  const gridWidth = paged ? carousel.width : grid.getBoundingClientRect().width;
+  const contentWidth = Math.ceil(gridWidth + pad + 2);
 
   // 任务栏模式没有标题栏，宽度只看内容
   let titleWidth = 0;
@@ -182,6 +187,95 @@ function scheduleMiniMeasure() {
   cancelAnimationFrame(miniMeasureRaf);
   miniMeasureRaf = requestAnimationFrame(() => {
     miniMeasureRaf = requestAnimationFrame(measureMiniWidth);
+  });
+}
+
+/* ----------------------------------------------------------- 关注栏轮播 */
+
+// 一屏最多放 4 张卡；关注超过 4 个时，紧凑模式自动分页轮播
+const CAROUSEL_PAGE_SIZE = 4;
+const CAROUSEL_INTERVAL = 6000;
+
+const carousel = { page: 0, pages: 0, width: 0, offsets: [], timer: 0, paused: false };
+
+/** 停掉轮播，把布局还原成普通的横向排列 */
+function resetWatchCarousel() {
+  clearInterval(carousel.timer);
+  carousel.timer = 0;
+  carousel.page = 0;
+  carousel.pages = 0;
+  carousel.width = 0;
+  carousel.offsets = [];
+
+  const grid = $('#watchGrid');
+  grid.style.transform = '';
+  grid.style.transition = '';
+  const block = $('.watch-block');
+  if (block) block.style.width = '';
+  $('#app').classList.remove('carousel');
+}
+
+/**
+ * 重新计算分页宽度，并保留当前页（换页时窗口宽度不会来回跳）。
+ * 返回 true 表示当前是轮播状态。
+ */
+function syncWatchCarousel() {
+  const grid = $('#watchGrid');
+  const cards = $$('#watchGrid .q');
+
+  if (!isCompact() || cards.length <= CAROUSEL_PAGE_SIZE) {
+    if (carousel.pages || $('#app').classList.contains('carousel')) resetWatchCarousel();
+    return false;
+  }
+
+  const gap = parseFloat(getComputedStyle(grid).columnGap) || 0;
+  const offsets = [];
+  const widths = [];
+  let acc = 0;
+  let pageStart = 0;
+
+  cards.forEach((card, index) => {
+    if (index % CAROUSEL_PAGE_SIZE === 0) {
+      pageStart = acc;
+      offsets.push(acc);
+    }
+    acc += card.offsetWidth;
+    // 一页的宽度含页内卡片之间的间距，不含页尾那一格间距
+    if ((index + 1) % CAROUSEL_PAGE_SIZE === 0 || index === cards.length - 1) {
+      widths.push(acc - pageStart);
+    }
+    acc += gap;
+  });
+
+  carousel.pages = offsets.length;
+  carousel.offsets = offsets;
+  carousel.width = Math.ceil(Math.max(...widths));
+  carousel.page = Math.min(carousel.page, carousel.pages - 1);
+
+  $('#app').classList.add('carousel');
+  $('.watch-block').style.width = `${carousel.width}px`;
+  grid.style.transition = 'transform 420ms cubic-bezier(0.4, 0, 0.2, 1)';
+  grid.style.transform = `translateX(-${carousel.offsets[carousel.page]}px)`;
+
+  if (!carousel.timer) {
+    carousel.timer = setInterval(() => {
+      // 鼠标停在条上时先别翻页，方便点卡片
+      if (carousel.paused) return;
+      carousel.page = (carousel.page + 1) % carousel.pages;
+      grid.style.transform = `translateX(-${carousel.offsets[carousel.page]}px)`;
+    }, CAROUSEL_INTERVAL);
+  }
+
+  return true;
+}
+
+function initWatchCarousel() {
+  const block = $('.watch-block');
+  block.addEventListener('pointerenter', () => {
+    carousel.paused = true;
+  });
+  block.addEventListener('pointerleave', () => {
+    carousel.paused = false;
   });
 }
 
@@ -538,6 +632,9 @@ function bindUI() {
   // 任务栏条右侧的还原按钮
   $('[data-act="restore-taskbar"]').addEventListener('click', () => window.market.action('taskbar'));
 
+  // 关注栏轮播：鼠标停在条上时暂停翻页
+  initWatchCarousel();
+
   // 任务栏条：拖动左侧手柄横向移动（子窗口不能用系统拖动区）
   const grip = $('.taskbar-grip');
   let gripDrag = null;
@@ -724,6 +821,8 @@ function applyMiniClass(on) {
   $('#app').classList.toggle('mini', Boolean(on));
   if (on) openSheet(false);
   requestAnimationFrame(updateQuoteFade);
+  carousel.page = 0;
+  syncWatchCarousel();
   scheduleMiniMeasure();
 }
 
@@ -731,6 +830,8 @@ function applyTaskbarClass(on) {
   $('#app').classList.toggle('taskbar', Boolean(on));
   if (on) openSheet(false);
   requestAnimationFrame(updateQuoteFade);
+  carousel.page = 0;
+  syncWatchCarousel();
   scheduleMiniMeasure();
 }
 

@@ -1219,6 +1219,16 @@ kbd {
   display: none;
 }
 
+/* 关注超过一屏：分页轮播，视口裁到一页宽，轨道整体平移 */
+.app.carousel .watch-block {
+  position: relative;
+  overflow: hidden;
+}
+
+.app.carousel .quotes {
+  will-change: transform;
+}
+
 .taskbar-restore {
   display: none;
 }
